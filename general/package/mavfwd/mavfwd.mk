@@ -5,8 +5,8 @@
 ################################################################################
 
 MAVFWD_SITE_METHOD = git
-MAVFWD_SITE = https://github.com/openipc/mavfwd
-MAVFWD_VERSION = c95613e241e03782fc6acc4780e60d8b4316a736
+MAVFWD_SITE = https://github.com/dhrebeniuk/mavfwd
+MAVFWD_VERSION = fa557d8819bbcfed01bec2d0f4ba0b9ba293652d
 
 MAVFWD_LICENSE = MIT
 MAVFWD_LICENSE_FILES = LICENSE
