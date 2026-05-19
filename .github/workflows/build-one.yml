@@ -1,0 +1,84 @@
+name: build-one
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to build (e.g. hi3516cv100_lite)'
+        required: true
+
+env:
+  TAG_NAME: latest
+
+jobs:
+  buildroot:
+    name: Firmware (${{inputs.platform}})
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Prepare firmware
+        run: |
+          echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+          echo CACHE_DATE=$(date +%m) >> ${GITHUB_ENV}
+
+      - name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/ccache
+          key: ${{inputs.platform}}-${{env.CACHE_DATE}}
+
+      - name: Setup dl cache
+        uses: actions/cache@v4
+        with:
+          path: output/dl
+          key: dl-${{env.CACHE_DATE}}
+          restore-keys: dl-
+
+      - name: Build firmware
+        run: |
+          export GIT_HASH=$(git rev-parse --short ${GITHUB_SHA})
+          export GIT_BRANCH=${GITHUB_REF_NAME}
+          echo GIT_HASH=${GIT_HASH} >> ${GITHUB_ENV}
+          echo GIT_BRANCH=${GIT_BRANCH} >> ${GITHUB_ENV}
+
+          mkdir -p /tmp/ccache
+          ln -s /tmp/ccache ${HOME}/.ccache
+
+          backoffs="30 60 120 300"
+          attempt=1
+          for sleep_for in $backoffs ""; do
+            make BOARD=${{inputs.platform}} && break
+            if [ -z "$sleep_for" ]; then
+              echo "::error::build failed after ${attempt} attempts"
+              exit 1
+            fi
+            echo "::warning::attempt ${attempt} failed, retrying after ${sleep_for}s"
+            sleep "$sleep_for"
+            attempt=$((attempt + 1))
+          done
+
+          TIME=$(date -d @${SECONDS} +%M:%S)
+          echo TIME=${TIME} >> ${GITHUB_ENV}
+
+          NORFW=$(find output/images -name openipc*nor*)
+          if [ -e ${NORFW} ]; then
+            echo NORFW=${NORFW} >> ${GITHUB_ENV}
+          fi
+
+          NANDFW=$(find output/images -name openipc*nand*)
+          if [ -e ${NANDFW} ]; then
+            echo NANDFW=${NANDFW} >> ${GITHUB_ENV}
+          fi
+
+      - name: Verify kernel modules
+        run: sh .github/scripts/check_target_modules.sh
+
+      - name: Upload firmware
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{env.TAG_NAME}}
+          files: |
+            ${{env.NORFW}}
+            ${{env.NANDFW}}

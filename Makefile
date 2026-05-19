@@ -4,6 +4,7 @@ BR_LINK = https://github.com/buildroot/buildroot/archive
 BR_FILE = /tmp/buildroot-$(BR_VER).tar.gz
 BR_CONF = $(TARGET)/openipc_defconfig
 TARGET ?= $(PWD)/output
+export CMAKE_POLICY_VERSION_MINIMUM := 3.5
 
 CONFIG = $(error variable BOARD not defined)
 TIMER := $(shell date +%s)
@@ -31,6 +32,7 @@ br-%: defconfig
 defconfig: prepare
 	@echo --- $(or $(CONFIG),$(error variable BOARD not found))
 	@cat $(CONFIG) $(PWD)/general/openipc.fragment > $(BR_CONF)
+	@grep -s '^BR2_GLOBAL_PATCH_DIR=' $(CONFIG) >> $(BR_CONF) || true
 	@$(BR_MAKE) BR2_DEFCONFIG=$(BR_CONF) defconfig
 
 prepare:
@@ -62,6 +64,9 @@ clean:
 distclean:
 	@rm -rf $(BR_FILE) $(TARGET)
 
+audit-abi:
+	@python3 $(PWD)/general/scripts/audit-vendor-abi.py
+
 deps:
 	sudo apt-get install -y automake autotools-dev bc build-essential cpio \
 		curl file fzf git libncurses-dev libtool lzop make rsync unzip wget libssl-dev
@@ -76,6 +81,18 @@ ifeq ($(BR2_TOOLCHAIN_EXTERNAL),y)
 	@$(BR_MAKE) BR2_DEFCONFIG=$(BR_CONF) defconfig
 endif
 	@$(BR_MAKE) sdk -j$(shell nproc)
+	@$(call BUNDLE_SDK)
+
+toolchain-asan: defconfig
+ifeq ($(BR2_TOOLCHAIN_EXTERNAL),y)
+	@cp -rf $(PWD)/general/package/gcc $(TARGET)/buildroot-$(BR_VER)/package
+	@$(MAKE) -f $(PWD)/general/toolchain.mk BR_CONF=$(BR_CONF) CONFIG=$(PWD)/$(CONFIG)
+	@$(BR_MAKE) BR2_DEFCONFIG=$(BR_CONF) defconfig
+endif
+	@echo 'BR2_EXTRA_GCC_CONFIG_OPTIONS="--enable-libsanitizer"' >> $(BR_CONF)
+	@$(BR_MAKE) BR2_DEFCONFIG=$(BR_CONF) defconfig
+	@$(BR_MAKE) sdk -j$(shell nproc)
+	@$(call BUNDLE_SDK)
 
 repack:
 ifeq ($(BR2_TARGET_ROOTFS_SQUASHFS),y)
@@ -97,6 +114,59 @@ endif
 ifeq ($(BR2_TARGET_ROOTFS_INITRAMFS),y)
 	@$(call PREPARE_REPACK,uImage,16384,,,initramfs)
 endif
+
+define BUNDLE_SDK
+	OSDRV_DIR=$(PWD)/general/package/$(BR2_OPENIPC_SOC_VENDOR)-osdrv-$(BR2_OPENIPC_SOC_FAMILY)/files; \
+	MPP_HEADERS=$(PWD)/general/package/hisilicon-osdrv-hi3516cv100/files/include; \
+	SDK_TGZ=$$(find $(TARGET)/images -name '*_sdk-buildroot.tar.gz' | head -1); \
+	UCLIBC_COMPAT_SRC=$(PWD)/general/package/uclibc-compat/src/uclibc-compat.c; \
+	UCLIBC_COMPAT_STATIC=$(PWD)/general/package/uclibc-compat/src/uclibc-compat-static.c; \
+	GLIBC_COMPAT_SRC=$(PWD)/general/package/glibc-compat/src/glibc-compat.c; \
+	GLIBC_COMPAT_STATIC=$(PWD)/general/package/glibc-compat/src/glibc-compat-static.c; \
+	SDK_CC=$$(ls $(TARGET)/host/bin/*-gcc 2>/dev/null | head -1); \
+	if [ -d "$$OSDRV_DIR" ] && [ -n "$$SDK_TGZ" ]; then \
+		SDK_TOP=$$(tar tzf $$SDK_TGZ | head -1 | cut -d/ -f1); \
+		rm -rf /tmp/sdk-overlay && mkdir -p /tmp/sdk-overlay/$$SDK_TOP/sdk; \
+		cp -a $$OSDRV_DIR/* /tmp/sdk-overlay/$$SDK_TOP/sdk/; \
+		if [ "$(BR2_OPENIPC_SOC_VENDOR)" = "hisilicon" ] && [ ! -d "$$OSDRV_DIR/include" ] && [ -d "$$MPP_HEADERS" ]; then \
+			mkdir -p /tmp/sdk-overlay/$$SDK_TOP/sdk/include; \
+			cp -a $$MPP_HEADERS/. /tmp/sdk-overlay/$$SDK_TOP/sdk/include/; \
+		fi; \
+		if [ -n "$$SDK_CC" ]; then \
+			SDK_AR=$$(echo $$SDK_CC | sed 's/-gcc$$/-ar/'); \
+			if [ -f "$$UCLIBC_COMPAT_SRC" ]; then \
+				$$SDK_CC -shared -Wall -O2 -fPIC \
+					-o /tmp/sdk-overlay/$$SDK_TOP/sdk/lib/libuclibc-compat.so \
+					$$UCLIBC_COMPAT_SRC; \
+			fi; \
+			if [ -f "$$UCLIBC_COMPAT_STATIC" ]; then \
+				$$SDK_CC -Wall -O2 -fPIC -c \
+					-o /tmp/sdk-overlay/$$SDK_TOP/sdk/lib/uclibc-compat-static.o \
+					$$UCLIBC_COMPAT_STATIC; \
+				$$SDK_AR rcs /tmp/sdk-overlay/$$SDK_TOP/sdk/lib/libuclibc-compat-static.a \
+					/tmp/sdk-overlay/$$SDK_TOP/sdk/lib/uclibc-compat-static.o; \
+				rm -f /tmp/sdk-overlay/$$SDK_TOP/sdk/lib/uclibc-compat-static.o; \
+			fi; \
+			if [ -f "$$GLIBC_COMPAT_SRC" ]; then \
+				$$SDK_CC -shared -Wall -O2 -fPIC \
+					-o /tmp/sdk-overlay/$$SDK_TOP/sdk/lib/libglibc-compat.so \
+					$$GLIBC_COMPAT_SRC; \
+			fi; \
+			if [ -f "$$GLIBC_COMPAT_STATIC" ]; then \
+				$$SDK_CC -Wall -O2 -fPIC -c \
+					-o /tmp/sdk-overlay/$$SDK_TOP/sdk/lib/glibc-compat-static.o \
+					$$GLIBC_COMPAT_STATIC; \
+				$$SDK_AR rcs /tmp/sdk-overlay/$$SDK_TOP/sdk/lib/libglibc-compat-static.a \
+					/tmp/sdk-overlay/$$SDK_TOP/sdk/lib/glibc-compat-static.o; \
+				rm -f /tmp/sdk-overlay/$$SDK_TOP/sdk/lib/glibc-compat-static.o; \
+			fi; \
+		fi; \
+		gunzip $$SDK_TGZ && \
+		tar rf $${SDK_TGZ%.tar.gz}.tar -C /tmp/sdk-overlay $$SDK_TOP && \
+		gzip $${SDK_TGZ%.tar.gz}.tar; \
+		rm -rf /tmp/sdk-overlay; \
+	fi
+endef
 
 define PREPARE_REPACK
 	$(if $(1),$(call CHECK_SIZE,$(1),$(2)))
