@@ -76,7 +76,7 @@ BR2_PACKAGE_FFMPEG_PROTOCOLS="file pipe udp rtp"
 
 BR2_PACKAGE_FFMPEG_DEMUXERS="mjpeg rawvideo video4linux2"
 
-BR2_PACKAGE_FFMPEG_MUXERS="rtp null mjpeg rawvideo"
+BR2_PACKAGE_FFMPEG_MUXERS="rtp null mjpeg rawvideo mpegts"
 
 BR2_PACKAGE_FFMPEG_DECODERS="mjpeg rawvideo"
 
